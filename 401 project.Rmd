@@ -1,0 +1,223 @@
+---
+title: "401 project"
+author: "JACK LOHMAN"
+date: "2025-03-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(survival)
+library(survminer)
+library(caret)   
+library(nnet)
+library(data.table)
+dispatch_data <- read_csv("big_dispatch.csv")
+```
+
+
+```{r}
+# Data cleaning
+
+dispatch_data <- dispatch_data %>%
+  select(-source_filename, -data_loaded_at, -data_updated_at, -dup_cad_number, 
+         -analysis_neighborhood, -police_district, -supervisor_district, -intersection_name, -intersection_id,
+         -intersection_point, ) %>%
+  filter(
+      !(call_type_final_desc %in% c("EMERGENCY BACKUP", "CITIZEN ARREST", "RESISTING ARREST", 
+                      "URGENT NOTIFICATION", "YGC / JAIL BREAK","FIRE", "EXPLOSION", "EXPLOSIVE FOUND", "HAZMAT INCIDENT", 
+                      "DRUNK DRIVER", "ROLLING DRUNK PERSON", "INJURY VEH ACCIDENT", 
+                      "BLOCKED SIDEWALK", "ALARM", "PANIC ALARM", "BOMB THREAT", "SUSPICIOUS MAILING")),  
+   
+      !(disposition %in% c(NA, "NA", "UNKNOWN", "CANCELLED", "GOA", "UTL")),
+      !(onscene_datetime %in% c(NA, "NA")),
+      !(close_datetime %in% c(NA, "NA"))
+      )
+  
+dispatch_data <- dispatch_data %>%
+  mutate(
+    onscene_datetime = as.POSIXct(onscene_datetime, format="%Y/%m/%d %I:%M:%S %p"),
+    close_datetime = as.POSIXct(close_datetime, format="%Y/%m/%d %I:%M:%S %p"),
+    enroute_datetime = as.POSIXct(enroute_datetime, format="%Y/%m/%d %I:%M:%S %p"),
+    mins_onscene_to_close = as.numeric(difftime(close_datetime, onscene_datetime, units = "mins"))
+  )
+    
+unique(dispatch_data$call_type_final_desc)
+
+
+
+```
+
+                      
+```{r}
+dispatch_data <- dispatch_data %>%
+  filter(enroute_datetime > as.POSIXct("2022-01-01 00:00:00", format="%Y-%m-%d %H:%M:%S"))
+
+dispatch_data <- dispatch_data %>%
+  mutate(incedent_cat = case_when(
+
+    call_type_final_desc %in% c("FIGHT NO WEAPON DV", "ASSAULT / BATTERY", "ASSAULT / BATTERY DV", "ASSAULT / BATTERY EA", 
+                      "ASSAULT / BATTERY CA", "AGG ASSAULT / ADW", "AGG ASSAULT / ADW DV", 
+                      "AGG ASSAULT / ADW CA", "AGG ASSAULT / ADW EA", "SEXUAL ASSAULT ADULT", 
+                      "SEXUAL ASSAULT JUVE", "HOMICIDE", "STABBING", "STABBING DV", 
+                      "SHOOTING", "SHOOTING DV", "SHOTS FIRED", "KIDNAPPING", "PERSON BREAK IN DV", 
+                      "FIGHT NO WEAPON") ~ "Violent Crimes",
+    
+    # Property Crimes
+    call_type_final_desc %in% c("PETTY THEFT", "PETTY THEFT EA", "GRAND THEFT", "GRAND THEFT EA", 
+                      "AUTO BOOST / STRIP", "STOLEN PROPERTY", "FRAUD", "FRAUD EA", 
+                      "BURGLARY", "ROBBERY", "STRONGARM ROBBERY", "PURSE SNATCH", 
+                      "STOLEN VEHICLE", "WANTED VEHICLE / SUB", "PERSON BREAKING IN") ~ "Property Crimes",
+    
+    # Disturbances & Public Order
+    call_type_final_desc %in% c("NOISE NUISANCE", "DEMO / PROTEST", "TRESPASSER", "SUSPICIOUS PERSON", 
+                      "SUSPICIOUS VEHICLE", "SURVEILLANCE", "PERSON W/KNIFE", "PERSON W/KNIFE DV", 
+                      "PERSON W/KNIFE CRIT", "PERSON W/GUN", "PERSON W/GUN DV", 
+                      "THREATS / HARASSMENT", "THREATS DV", "THREATS EA", 
+                      "STALKING", "STALKING DV") ~ "Disturbances & Public Order",
+    
+    # Mental Health & Welfare Checks
+    call_type_final_desc %in% c("MENTALLY DISTURBED", "MENTALLY DIST CRIT", "PSYCH EVAL / HOLD", 
+                      "SUICIDE ATTEMPT", "SUICIDE ATT CRIT", "WELL BEING CHECK", 
+                      "WELL BEING CHECK DV", "ELDERLY ABUSE", "SENILE PERSON", 
+                      "MISSING ADULT", "MISSING JUVENILE", "JUVE BEYOND CONTROL", 
+                      "JUVENILE DISTURBANCE") ~ "Mental Health & Welfare Checks",
+    
+    
+
+    TRUE ~ "Other/Uncategorized"
+  ))
+```
+
+
+```{r}
+setDT(dispatch_data)
+
+dispatch_data[, call_volume := 
+  dispatch_data[.SD, 
+    on = .(enroute_datetime < close_datetime, close_datetime > enroute_datetime), 
+    .N, by = .EACHI]$N - 1
+]
+
+dispatch_data <- as.data.frame(dispatch_data)
+
+dispatch_data
+
+
+```
+
+
+```{r}
+dispatch_data <- dispatch_data %>%
+  mutate(punitive_action = case_when(
+
+    disposition %in% c("ABA", "ADM", "ADV", "CAN", "CSA", "HAN", "PAS", "NOM", "ND", "NCR", "VAS") ~ 0,
+    
+    disposition %in% c("ARR", "CIT", "CRM", "REP") ~ 1,
+    
+    TRUE ~ NA
+  ))
+
+
+dispatch_data
+
+```
+
+```{r}
+set.seed(123)  
+trainIndex <- createDataPartition(iris$Species, p = 0.8, list = FALSE)
+trainData <- dispatch_data[trainIndex, ]
+testData <- dispatch_data[-trainIndex, ]
+
+```
+
+
+```{r}
+set.seed(123)
+
+train_control <- trainControl(method = "cv", number = 5)  # 5-fold cross-validation
+
+
+
+multi_logit_model <- train(incedent_cat ~ mins_onscene_to_close + call_volume +
+                           data = trainData, 
+                           method = "multinom", 
+                           trControl = train_control)
+
+# Print model summary
+print(multi_logit_model)
+
+```
+
+
+```{r}
+# Predict on test data
+predictions <- predict(multi_logit_model, newdata = testData)
+
+# Confusion Matrix to evaluate performance
+conf_matrix <- confusionMatrix(predictions, testData$Species)
+print(conf_matrix)
+
+```
+
+ABA
+Abated
+Officer responded, confirmed the call, and handled
+ADM
+Admonished
+Officer responded, confirmed the call, and handled
+ADV
+Advised
+Officer responded, confirmed the call, and handled
+ARR
+Arrest
+Officer indicates an arrest. Note: Will be different from other SFPD reporting and is should not be used to calculate arrest statistics
+CAN
+Cancel
+Call cancelled before officers engaged the call
+CSA
+CPSA assignment
+
+CPSA assignment
+22
+Cancel
+Call cancelled before officers engaged the call
+CIT
+Cited
+Citation was issued
+CRM
+Criminal Activation
+Burglary Alarm calls resulting in criminal activity
+GOA
+Gone on Arrival
+Upon arriving suspect no longer on scene.
+HAN
+Handled
+Officer responded, confirmed the call, and handled
+NCR
+Non-Criminal
+Arrived on scene and did not find a criminal issue
+ND
+No Disposition
+Officer determined this call related to another call. The other call would have the disposition for the incident.
+NOM
+No Merit
+Arrive on scene and Officer determines doesn’t merit further response
+PAS
+Premises Appears Secure
+Premises Appears Secure. Disposition commonly seen for house alarm calls.
+REP
+Report
+Officer resolved incident and this resulted in a police report. Note: Should not be used to calculate official number of reports
+SFD
+SFFD Medical Staff Engaged
+EMS or SFFD Medical Staff Engaged
+UTL
+Unable to Locate
+Upon arriving suspect no longer on scene
+VAS
