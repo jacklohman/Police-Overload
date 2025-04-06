@@ -1,6 +1,6 @@
 README
 
-Police and the effects of Inter
+Police and the potential effects of the urban overload hypothesis
 
 By: Jack Lohman
 
