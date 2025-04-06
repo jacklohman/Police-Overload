@@ -7,7 +7,8 @@ By: Jack Lohman
 
 Project Statement: 
 
-The purpose of this project is to use critic sentiment in combination with film data to create a model capable of predicting Rotten Tomatoes critic scores, also known as the "Tomatometer." 
+The purpose of this project is to use open source police dispatch data to analyze the effects of 
+The urban overload hypothesis (that decision making changes in environments with a high amount of stimuli) in a law enforcement setting.
 
 
 Motivation:
@@ -21,7 +22,17 @@ The project, overseen by Dr. Scarcioffolo, is currently in the development stage
 
 Requirements:
 
-Required hardware includes RStudio version 2024.12.1+563, with the following packages: tidyverse, kableExtra, caret, survival, survminer, lubridate, data.table.
+Required hardware includes RStudio version 2024.12.1+563, with the following packages:
+	tidyverse
+	lubridate
+	Survival
+	survminer
+	caret  
+	nnet
+	data.table
+	kableExtra
+	gridExtra
+	cowplot
 
 
 Data File:
@@ -40,8 +51,10 @@ How to Use:
 	*Open in RStudio, making sure that source files are in proper directory
 	*Import packages in file header
 	*Navigate to the "Run" menu and run all to see output
+		*Ouput includes results fro,:
+		*Cox PH model and associated coefficients
+		*Multinomial regression and associated coefficients
 	
-		As the current status of the project is incomplete, code and findings in within 		the document should be treated as such. 
  
 Contribute:
 

@@ -10,6 +10,8 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r}
+# CHAT GPT & anthropic's claude AI used for assistance in developing this code 
+
 library(tidyverse)
 library(lubridate)
 library(survival)
@@ -17,11 +19,9 @@ library(survminer)
 library(caret)   
 library(nnet)
 library(data.table)
-library(knitr)
 library(kableExtra)
 library(gridExtra)
 library(cowplot)
-library(splines)
 dispatch_data <- read_csv("big_dispatch.csv")
 ```
 
@@ -416,5 +416,6 @@ for (level in names(summ)) {
   print(km_plots[[level]])
 }
 
+summary(dispatch_data)
 ```
 
