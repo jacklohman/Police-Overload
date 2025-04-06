@@ -17,6 +17,11 @@ library(survminer)
 library(caret)   
 library(nnet)
 library(data.table)
+library(knitr)
+library(kableExtra)
+library(gridExtra)
+library(cowplot)
+library(splines)
 dispatch_data <- read_csv("big_dispatch.csv")
 ```
 
@@ -24,10 +29,12 @@ dispatch_data <- read_csv("big_dispatch.csv")
 ```{r}
 # Data cleaning
 
+
+
 dispatch_data <- dispatch_data %>%
   select(-source_filename, -data_loaded_at, -data_updated_at, -dup_cad_number, 
          -analysis_neighborhood, -police_district, -supervisor_district, -intersection_name, -intersection_id,
-         -intersection_point, ) %>%
+         -intersection_point, -pd_incident_report, -call_type_original_notes, -call_type_final_notes) %>%
   filter(
       !(call_type_final_desc %in% c("EMERGENCY BACKUP", "CITIZEN ARREST", "RESISTING ARREST", 
                       "URGENT NOTIFICATION", "YGC / JAIL BREAK","FIRE", "EXPLOSION", "EXPLOSIVE FOUND", "HAZMAT INCIDENT", 
@@ -50,16 +57,18 @@ dispatch_data <- dispatch_data %>%
 unique(dispatch_data$call_type_final_desc)
 
 
-
+dispatch_data
 ```
 
                       
 ```{r}
+# creating incident categories 
+
 dispatch_data <- dispatch_data %>%
   filter(enroute_datetime > as.POSIXct("2022-01-01 00:00:00", format="%Y-%m-%d %H:%M:%S"))
 
 dispatch_data <- dispatch_data %>%
-  mutate(incedent_cat = case_when(
+  mutate(incident_cat = case_when(
 
     call_type_final_desc %in% c("FIGHT NO WEAPON DV", "ASSAULT / BATTERY", "ASSAULT / BATTERY DV", "ASSAULT / BATTERY EA", 
                       "ASSAULT / BATTERY CA", "AGG ASSAULT / ADW", "AGG ASSAULT / ADW DV", 
@@ -68,20 +77,20 @@ dispatch_data <- dispatch_data %>%
                       "SHOOTING", "SHOOTING DV", "SHOTS FIRED", "KIDNAPPING", "PERSON BREAK IN DV", 
                       "FIGHT NO WEAPON") ~ "Violent Crimes",
     
-    # Property Crimes
+  
     call_type_final_desc %in% c("PETTY THEFT", "PETTY THEFT EA", "GRAND THEFT", "GRAND THEFT EA", 
                       "AUTO BOOST / STRIP", "STOLEN PROPERTY", "FRAUD", "FRAUD EA", 
                       "BURGLARY", "ROBBERY", "STRONGARM ROBBERY", "PURSE SNATCH", 
                       "STOLEN VEHICLE", "WANTED VEHICLE / SUB", "PERSON BREAKING IN") ~ "Property Crimes",
     
-    # Disturbances & Public Order
+
     call_type_final_desc %in% c("NOISE NUISANCE", "DEMO / PROTEST", "TRESPASSER", "SUSPICIOUS PERSON", 
                       "SUSPICIOUS VEHICLE", "SURVEILLANCE", "PERSON W/KNIFE", "PERSON W/KNIFE DV", 
                       "PERSON W/KNIFE CRIT", "PERSON W/GUN", "PERSON W/GUN DV", 
                       "THREATS / HARASSMENT", "THREATS DV", "THREATS EA", 
                       "STALKING", "STALKING DV") ~ "Disturbances & Public Order",
     
-    # Mental Health & Welfare Checks
+   
     call_type_final_desc %in% c("MENTALLY DISTURBED", "MENTALLY DIST CRIT", "PSYCH EVAL / HOLD", 
                       "SUICIDE ATTEMPT", "SUICIDE ATT CRIT", "WELL BEING CHECK", 
                       "WELL BEING CHECK DV", "ELDERLY ABUSE", "SENILE PERSON", 
@@ -96,15 +105,45 @@ dispatch_data <- dispatch_data %>%
 
 
 ```{r}
-setDT(dispatch_data)
+# call volume calculations
 
-dispatch_data[, call_volume := 
-  dispatch_data[.SD, 
-    on = .(enroute_datetime < close_datetime, close_datetime > enroute_datetime), 
+setDT(dispatch_data) # to a data table for reasonable processing times
+
+dispatch_data[, call_volume :=          # compares enroute time of the nth row to all other enroute and close time to determine 
+    dispatch_data[.SD,                  # concurrent calls, call volume. nth enroute > all enroute, nth enroute < all close 
+    on = .(enroute_datetime > enroute_datetime, enroute_datetime < close_datetime), 
     .N, by = .EACHI]$N - 1
 ]
 
-dispatch_data <- as.data.frame(dispatch_data)
+dispatch_data <- as.data.frame(dispatch_data) # back to df
+```
+
+
+```{r}
+# creating night flag variable
+
+dispatch_data <- dispatch_data %>%
+  filter(onscene_datetime <= close_datetime)
+
+# Function to calculate night proportion (80% of call must take place at night surrounding 9pm and 4am)
+is_night_majority <- function(start_time, end_time) {
+
+  times <- seq(start_time, end_time, by = "1 min")
+
+  night_minutes <- sum(hour(times) >= 21 | hour(times) < 4)
+  
+ 
+  proportion_night <- night_minutes / length(times)
+  
+
+  return(as.integer(proportion_night > 0.8))
+}
+
+
+dispatch_data <- dispatch_data %>%
+  rowwise() %>%  
+  mutate(night_flag = is_night_majority(onscene_datetime, close_datetime)) %>%
+  ungroup()
 
 dispatch_data
 
@@ -113,6 +152,8 @@ dispatch_data
 
 
 ```{r}
+# creating punitive action variable
+
 dispatch_data <- dispatch_data %>%
   mutate(punitive_action = case_when(
 
@@ -120,17 +161,21 @@ dispatch_data <- dispatch_data %>%
     
     disposition %in% c("ARR", "CIT", "CRM", "REP") ~ 1,
     
-    TRUE ~ NA
+    TRUE ~ 0
   ))
-
-
-dispatch_data
 
 ```
 
 ```{r}
+# test and train sets for multinom logit
+
+
 set.seed(123)  
-trainIndex <- createDataPartition(iris$Species, p = 0.8, list = FALSE)
+dispatch_data <- na.omit(dispatch_data)
+
+
+
+trainIndex <- createDataPartition(dispatch_data$punitive_action, p = 0.7, list = FALSE)
 trainData <- dispatch_data[trainIndex, ]
 testData <- dispatch_data[-trainIndex, ]
 
@@ -138,86 +183,238 @@ testData <- dispatch_data[-trainIndex, ]
 
 
 ```{r}
+# multinomial logistic regression
+
 set.seed(123)
 
-train_control <- trainControl(method = "cv", number = 5)  # 5-fold cross-validation
+trainData$incident_cat <- factor(trainData$incident_cat)
+trainData$punitive_action <- factor(trainData$punitive_action)  
+testData$incident_cat <- factor(testData$incident_cat)
+testData$punitive_action <- factor(testData$punitive_action)  
+
+
+# setting the reference category to other
+trainData$incident_cat <- relevel(trainData$incident_cat, ref = "Other/Uncategorized")
+
+
+train_control <- trainControl(method = "cv", number = 10)
 
 
 
-multi_logit_model <- train(incedent_cat ~ mins_onscene_to_close + call_volume +
-                           data = trainData, 
-                           method = "multinom", 
-                           trControl = train_control)
+multi_logit_model <- train(
+  punitive_action ~ mins_onscene_to_close + call_volume + incident_cat + priority_original + night_flag,
+  data = trainData, 
+  method = "multinom", 
+  trControl = train_control
+)
 
-# Print model summary
 print(multi_logit_model)
+
 
 ```
 
 
 ```{r}
-# Predict on test data
+
+summary_result <- summary(multi_logit_model$finalModel)
+
+summary_model <- summary(multi_logit_model$finalModel)
+coefs <- summary_model$coefficients
+std_errs <- summary_model$standard.errors
+
+z_values <- coefs / std_errs
+p_values <- 2 * (1 - pnorm(abs(z_values)))
+p_values
+
+
+
+if (inherits(summary_result, "summary.multinom")) {
+  coeffs <- summary_result$coefficients
+  odds_ratios <- exp(coeffs)
+  
+  coeff_df <- as.data.frame(coeffs)
+  colnames(coeff_df) <- names(model$trainingData) 
+  
+  odds_df <- as.data.frame(odds_ratios)
+  colnames(odds_df) <- names(model$trainingData)
+  
+  print(coeff_df)
+  
+}
+  
+odds_tb <- kable(odds_df, format = "latex", caption = "Multinomial Regression Odds Ratios") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+cat(odds_tb)
+
+dispatch_data
+```
+
+
+
+```{r}
+# multinom logit predictions 
+
+all_levels <- union(levels(factor(predictions)), levels(factor(testData$punitive_action)))
+
+predictions <- factor(predictions, levels = all_levels)
+testData$punitive_action <- factor(testData$punitive_action, levels = all_levels)
+
 predictions <- predict(multi_logit_model, newdata = testData)
 
-# Confusion Matrix to evaluate performance
-conf_matrix <- confusionMatrix(predictions, testData$Species)
-print(conf_matrix)
+
+
+cm <- confusionMatrix(predictions, testData$punitive_action)
+kable(cm$table, caption = "Confusion Matrix") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+
+accuracy <- cm$overall['Accuracy']
+kappa <- cm$overall['Kappa']
+
+# results
+ml_results <- data.frame(
+  Accuracy = accuracy,
+  Kappa = kappa
+)
+
+reg_acc <- kable(ml_results, format = "latex", caption = "Multinomial Regression Accuracy") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+summary_model <- summary(model$finalModel)
+
+cat(reg_acc)
+```
+
+ 
+```{r}
+# attempting a call volume scale (var fails Cox PH)
+
+dispatch_data$call_volume_scaled <- scale(dispatch_data$call_volume)
+
+summary(dispatch_data$call_volume_scaled)
+
+
+dispatch_data$call_volume_category <- cut(dispatch_data$call_volume,
+                                        breaks = quantile(dispatch_data$call_volume, probs = 0:4/4, na.rm = TRUE),
+                                        include.lowest = TRUE,
+                                        labels = c("Low", "Medium Low", "Medium High", "High"))
 
 ```
 
-ABA
-Abated
-Officer responded, confirmed the call, and handled
-ADM
-Admonished
-Officer responded, confirmed the call, and handled
-ADV
-Advised
-Officer responded, confirmed the call, and handled
-ARR
-Arrest
-Officer indicates an arrest. Note: Will be different from other SFPD reporting and is should not be used to calculate arrest statistics
-CAN
-Cancel
-Call cancelled before officers engaged the call
-CSA
-CPSA assignment
+```{r}
+# filtering to look at only events that ended with punitive action
 
-CPSA assignment
-22
-Cancel
-Call cancelled before officers engaged the call
-CIT
-Cited
-Citation was issued
-CRM
-Criminal Activation
-Burglary Alarm calls resulting in criminal activity
-GOA
-Gone on Arrival
-Upon arriving suspect no longer on scene.
-HAN
-Handled
-Officer responded, confirmed the call, and handled
-NCR
-Non-Criminal
-Arrived on scene and did not find a criminal issue
-ND
-No Disposition
-Officer determined this call related to another call. The other call would have the disposition for the incident.
-NOM
-No Merit
-Arrive on scene and Officer determines doesn’t merit further response
-PAS
-Premises Appears Secure
-Premises Appears Secure. Disposition commonly seen for house alarm calls.
-REP
-Report
-Officer resolved incident and this resulted in a police report. Note: Should not be used to calculate official number of reports
-SFD
-SFFD Medical Staff Engaged
-EMS or SFFD Medical Staff Engaged
-UTL
-Unable to Locate
-Upon arriving suspect no longer on scene
-VAS
+dispatch_data <- dispatch_data %>% 
+  filter(punitive_action == 1)
+
+summ <- list()
+zph_results <- list()
+
+
+for (level in unique(dispatch_data$incident_cat)) {
+  subset_data <- dispatch_data %>% filter(incident_cat == level)
+  
+  #  Cox model
+  cox_model <- coxph(Surv(mins_onscene_to_close, punitive_action) ~ night_flag + call_volume,
+                     data = subset_data)
+  
+  #  summary statistics
+  stats <- summary(cox_model)
+  summ[[as.character(level)]] <- stats
+  
+  
+  # Schoenfeld resid
+  zph_test <- cox.zph(cox_model)
+  zph_results[[as.character(level)]] <- zph_test
+  
+  
+  km_plots[[as.character(level)]] <- ggsurvplot(
+  surv_fit, 
+  data = subset_data,
+  ggtheme = theme_minimal(),
+  title = paste("Kaplan Meier Curve: ", level),
+  legend.title = "Time of Day",
+  legend.labs = c("Day", "Night"),  # Customize the labels for 0 and 1
+  ylab = "Probability of avoiding arrest",
+  xlab = "Time (minutes)",
+  xlim = c(0,1000)
+  )
+}
+
+# output
+for (level in names(summ)) {
+  cat("======== Group:", level, "========\n")
+  cat("Model Summary:\n")
+  print(summ[[level]]$coefficients)
+
+  
+  cat("\nScore Test (cox.zph):\n")
+  print(zph_results[[level]])
+}
+```
+
+
+```{r}
+
+summ <- list()
+km_plots <- list()
+zph_results <- list()
+aic_results <- list()
+
+for (level in unique(dispatch_data$incident_cat)) {
+  subset_data <- dispatch_data %>% filter(incident_cat == level)
+  
+  #  Cox model
+  cox_model <- coxph(Surv(mins_onscene_to_close, punitive_action) ~ night_flag,
+                     data = subset_data)
+  
+  #  summary statistics
+  stats <- summary(cox_model)
+  summ[[as.character(level)]] <- stats
+  
+  #  AIC value
+  aic_results[[as.character(level)]] <- extractAIC(cox_model)[2]
+  
+  # Schoenfeld resid
+  zph_test <- cox.zph(cox_model)
+  zph_results[[as.character(level)]] <- zph_test
+  
+  # Kaplan meier strata on night_flag
+  surv_fit <- survfit(Surv(mins_onscene_to_close, punitive_action) ~ night_flag, data = subset_data)
+  
+  km_plots[[as.character(level)]] <- ggsurvplot(
+  surv_fit, 
+  data = subset_data,
+  ggtheme = theme_minimal(),
+  title = paste("Kaplan Meier Curve: ", level),
+  legend.title = "Time of Day",
+  legend.labs = c("Day", "Night"),  # Customize the labels for 0 and 1
+  ylab = "Probability of avoiding arrest",
+  xlab = "Time (minutes)",
+  xlim = c(0,1000)
+  )
+}
+
+# output
+for (level in names(summ)) {
+  cat("======== Group:", level, "========\n")
+  cat("Model Summary:\n")
+  print(summ[[level]]$coefficients)
+  
+  cat("\nAIC:\n")
+  print(aic_results[[level]])
+  
+  cat("\nScore Test (cox.zph):\n")
+  print(zph_results[[level]])
+  
+  
+  cat("\nSchoenfeld Residual Plot:\n")
+  plot(zph_results[[level]], main = paste("Schoenfeld Residuals -", level))
+  
+
+  print(km_plots[[level]])
+}
+
+```
+
