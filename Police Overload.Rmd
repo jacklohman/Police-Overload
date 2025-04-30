@@ -29,7 +29,7 @@ dispatch_data <- read_csv("big_dispatch.csv")
 ```{r}
 # Data cleaning
 
-
+# removing columns not useful to analysis
 
 dispatch_data <- dispatch_data %>%
   select(-source_filename, -data_loaded_at, -data_updated_at, -dup_cad_number, 
@@ -46,6 +46,7 @@ dispatch_data <- dispatch_data %>%
       !(close_datetime %in% c(NA, "NA"))
       )
   
+# crating minutes onscene variable
 dispatch_data <- dispatch_data %>%
   mutate(
     onscene_datetime = as.POSIXct(onscene_datetime, format="%Y/%m/%d %I:%M:%S %p"),
@@ -53,6 +54,8 @@ dispatch_data <- dispatch_data %>%
     enroute_datetime = as.POSIXct(enroute_datetime, format="%Y/%m/%d %I:%M:%S %p"),
     mins_onscene_to_close = as.numeric(difftime(close_datetime, onscene_datetime, units = "mins"))
   )
+
+# unique values
     
 unique(dispatch_data$call_type_final_desc)
 
@@ -62,11 +65,13 @@ dispatch_data
 
                       
 ```{r}
-# creating incident categories 
 
+
+# filtering incidents to only those after 01-01-2022 (capturing post covid/riots period)
 dispatch_data <- dispatch_data %>%
   filter(enroute_datetime > as.POSIXct("2022-01-01 00:00:00", format="%Y-%m-%d %H:%M:%S"))
 
+# creating incident categories 
 dispatch_data <- dispatch_data %>%
   mutate(incident_cat = case_when(
 
@@ -138,7 +143,6 @@ is_night_majority <- function(start_time, end_time) {
 
   return(as.integer(proportion_night > 0.8))
 }
-
 
 dispatch_data <- dispatch_data %>%
   rowwise() %>%  
@@ -215,39 +219,32 @@ print(multi_logit_model)
 
 
 ```{r}
-
+# odds ratios
 summary_result <- summary(multi_logit_model$finalModel)
+coefs <- summary_result$coefficients
+std_errs <- summary_result$standard.errors
 
-summary_model <- summary(multi_logit_model$finalModel)
-coefs <- summary_model$coefficients
-std_errs <- summary_model$standard.errors
-
+# calculating p-values and statistics
 z_values <- coefs / std_errs
 p_values <- 2 * (1 - pnorm(abs(z_values)))
-p_values
 
 
+odds_ratios <- exp(coefs)
 
-if (inherits(summary_result, "summary.multinom")) {
-  coeffs <- summary_result$coefficients
-  odds_ratios <- exp(coeffs)
-  
-  coeff_df <- as.data.frame(coeffs)
-  colnames(coeff_df) <- names(model$trainingData) 
-  
-  odds_df <- as.data.frame(odds_ratios)
-  colnames(odds_df) <- names(model$trainingData)
-  
-  print(coeff_df)
-  
-}
-  
+
+coeff_df <- as.data.frame(coefs)
+odds_df <- as.data.frame(odds_ratios)
+
+print(coeff_df)
+print(odds_df)
+
+
+#table for odds ratios (exported to LaTeX)
 odds_tb <- kable(odds_df, format = "latex", caption = "Multinomial Regression Odds Ratios") %>%
   kable_styling(bootstrap_options = c("striped", "hover"))
 
 cat(odds_tb)
 
-dispatch_data
 ```
 
 
@@ -262,8 +259,7 @@ testData$punitive_action <- factor(testData$punitive_action, levels = all_levels
 
 predictions <- predict(multi_logit_model, newdata = testData)
 
-
-
+# confusion matrix using model predictions
 cm <- confusionMatrix(predictions, testData$punitive_action)
 kable(cm$table, caption = "Confusion Matrix") %>%
   kable_styling(bootstrap_options = c("striped", "hover"))
@@ -303,6 +299,7 @@ dispatch_data$call_volume_category <- cut(dispatch_data$call_volume,
 ```
 
 ```{r}
+# Cox model WITH CALL VOLUME (results insignificant)
 # filtering to look at only events that ended with punitive action
 
 dispatch_data <- dispatch_data %>% 
@@ -311,6 +308,7 @@ dispatch_data <- dispatch_data %>%
 summ <- list()
 zph_results <- list()
 
+# running a cox model for each incident category
 
 for (level in unique(dispatch_data$incident_cat)) {
   subset_data <- dispatch_data %>% filter(incident_cat == level)
@@ -356,11 +354,13 @@ for (level in names(summ)) {
 
 
 ```{r}
-
+# Cox model WITH NIGHT FLAG ONLY
 summ <- list()
 km_plots <- list()
 zph_results <- list()
 aic_results <- list()
+
+# running a cox model for each incident category
 
 for (level in unique(dispatch_data$incident_cat)) {
   subset_data <- dispatch_data %>% filter(incident_cat == level)

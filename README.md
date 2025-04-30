@@ -37,7 +37,7 @@ Required hardware includes RStudio version 2024.12.1+563, with the following pac
 
 Data File:
 
-As the data file is too large to be added to the repository, it is available upon request. It contains dispatched law enforcement incidents from the city of San Francisco from 2015 onwards, but only the years 2022 to 2025 are used in analysis. 
+As the data file is too large to be added to the repository, it is available upon request. It contains dispatched law enforcement incidents from the city of San Francisco from 2015 onwards, but only the years 2022 to 2025 are used in analysis. The link to the original data file can be found in the DATA DOCUMENTATION file. 
 
 Code Files:
 
