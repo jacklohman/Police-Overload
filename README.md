@@ -17,7 +17,8 @@ This project was created for Denison Data Analytics 401 class, taught by Dr. Ale
 
 Build Status:
 
-The project, overseen by Dr. Scarcioffolo, is currently in the development stages, and results are not yet considered complete. 
+The project, overseen by Dr. Scarcioffolo, has reached its conclusion, additional changes to 
+further the goals of the project are welcome. 
 
 
 Requirements:
@@ -58,7 +59,7 @@ How to Use:
  
 Contribute:
 
-Any contributions with the intention of genuine improvement on the base product is permitted and encouraged. 
+Any contributions with the intention of genuine improvement on the base product are permitted and encouraged. 
 
 
 License:
